@@ -1,0 +1,9 @@
+streamlit
+spotipy
+openai
+requests
+lyricsgenius
+nltk
+scikit-learn
+pandas
+python-dotenv
