@@ -1,18 +1,16 @@
 import streamlit as st
-from functools import lru_cache
 import spotipy
 import openai
 from openai import OpenAI
 from spotipy.oauth2 import SpotifyOAuth
 from collections import Counter
 import lyricsgenius
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from nltk.stem import WordNetLemmatizer
 import logging
 from dotenv import load_dotenv
 import os
+import pandas as pd
+
+st.set_page_config(layout="wide")
 
 load_dotenv()
 
@@ -34,14 +32,11 @@ auth_manager = SpotifyOAuth(
 # Create an instance of the Genius API client
 genius = lyricsgenius.Genius(GENIUS_ACCESS_TOKEN)
 
+# Create a placeholder for the lyrics analysis
+analysis_placeholder = st.empty()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Download required NLTK resources
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
-
 
 def get_lyrics(song_title, artist_name):
     try:
@@ -62,27 +57,13 @@ def get_top_tracks(sp):
 def get_top_artists(sp):
     # Since the Spotify API doesn't have a direct endpoint for global top artists,
     # this is approximated using the top tracks.
-    top_tracks = sp.playlist_tracks("spotify:playlist:37i9dQZEVXbLRQDuF5jeBp", limit=100)  # Fetch more tracks
+    top_tracks = sp.playlist_tracks("spotify:playlist:37i9dQZEVXbLRQDuF5jeBp", limit=100)
     all_artists = [track['track']['artists'] for track in top_tracks['items']]
     artist_freq = Counter([artist['name'] for sublist in all_artists for artist in sublist])
-    return artist_freq.most_common(10)
+    top_artists = [sp.search(q=f'artist:{artist}', type='artist', limit=1)['artists']['items'][0] for artist, _ in
+                   artist_freq.most_common(10)]
+    return top_artists
 
-
-def preprocess_lyrics(lyrics):
-    # Tokenize the lyrics
-    words = word_tokenize(lyrics)
-    # Convert to lowercase
-    words = [word.lower() for word in words]
-    # Remove stopwords
-    stop_words = set(stopwords.words("english"))
-    words = [word for word in words if word not in stop_words]
-    # Lemmatize the words
-    lemmatizer = WordNetLemmatizer()
-    words = [lemmatizer.lemmatize(word) for word in words]
-    return words
-
-
-@lru_cache(maxsize=None)
 def analyze_lyrics_with_openai(lyrics, prompt):
     try:
         client = OpenAI(api_key=openai.api_key)
@@ -107,7 +88,6 @@ def analyze_lyrics_with_openai(lyrics, prompt):
 
 
 def main():
-    st.set_page_config(layout="wide")
     st.title("Spotify Analyzer")
 
     if not auth_manager.cache_handler.get_cached_token():
@@ -141,11 +121,68 @@ def main():
         token_info = auth_manager.cache_handler.get_cached_token()
         sp = spotipy.Spotify(auth_manager=auth_manager)
 
+        # Get Top Data
+        results = {}
+        for term in ['medium_term']:
+            results[term] = {}
+            results[term]['top_tracks'] = sp.current_user_top_tracks(time_range=term, limit=10)['items']
+            results[term]['top_artists'] = sp.current_user_top_artists(time_range=term, limit=10)['items']
+
+        # Display Results
+        st.header('Personal Top Tracks & Artists',divider='rainbow')
+
+        # Create columns for the personal track list and analysis results with custom widths
+        col3, col4 = st.columns(2)  # Adjust the width ratio as needed
+
+        with col3:
+            with st.expander("Top Tracks"):
+                for track in results['medium_term']['top_tracks']:
+                    track_name = track['name']
+                    artist_name = track['artists'][0]['name']
+
+                    # Create columns for the track info and analyze button
+                    track_col, button_col = st.columns([4, 1])
+
+                    with track_col:
+                        st.write(f"{track_name} - {artist_name}")
+
+                    with button_col:
+                        if st.button(f"Analyze", key=f"personal_{track_name}"):
+                            analyze_track_lyrics(track_name, artist_name, analysis_placeholder)
+
+        with col3:
+            with st.expander("Top Artists"):
+                personal_top_artists = results['medium_term']['top_artists']
+                for artist in personal_top_artists:
+                    st.subheader(artist['name'])
+                    st.write(f"**Genres:** {', '.join(artist['genres'])}")
+                    st.write(f"**Popularity:** {artist['popularity']}")
+                    st.write(f"**Followers:** {artist['followers']['total']}")
+
+                # Create a DataFrame for personal top artists' popularity
+                personal_artist_data = {
+                    'Artist': [artist['name'] for artist in personal_top_artists],
+                    'Popularity': [artist['popularity'] for artist in personal_top_artists]
+                }
+                df_personal_artists = pd.DataFrame(personal_artist_data)
+                df_personal_artists = df_personal_artists.sort_values('Popularity', ascending=False)
+
+                # Display explanation message
+                st.header('Popularity',divider='rainbow')
+                st.write("The artist's popularity is calculated from the popularity of all the artist's tracks.")
+                st.write("The popularity score is based on several factors, including:")
+                st.write("- The total number of plays the artist has had across all their tracks.")
+                st.write("- How recent those plays are.")
+                st.write("- The number of positive and negative ratings the artist's tracks have received from users.")
+        with col4:
+            # Create a bar chart for personal top artists' popularity
+            st.bar_chart(data=df_personal_artists, x='Artist', y='Popularity', width=600, height=400)
+
         # Display top tracks and playlists (unauthenticated)
-        st.title("Global Top Tracks & Artists")
+        st.header('Global Top Tracks & Artists',divider='rainbow')
 
         # Create columns for the track list and analysis results
-        col1, col2 = st.columns([2, 3])
+        col1, col2 = st.columns(2)
 
         with col1:
             top_tracks = get_top_tracks(sp)
@@ -166,7 +203,7 @@ def main():
                             if lyrics:
                                 prompt = (
                                     "Analyze the following lyrics and provide insights about the song's theme, "
-                                    "emotions, and any figurative language used. Limit the analysis to two paragraphs"
+                                    "emotions, and any figurative language used. Limit the analysis to two paragraphs. State your analysis without ever referring to the prompter."
                                 )
                                 analysis = analyze_lyrics_with_openai(lyrics, prompt)
                                 if analysis:
@@ -177,62 +214,53 @@ def main():
                                         st.write(analysis)
                             else:
                                 st.write(f"Lyrics not found for {track_name} - {artist_name}")
+        with col1:
+            with st.expander("Top Artists"):
+                top_artists = get_top_artists(sp)
+                for artist in top_artists:
+                    st.subheader(artist['name'])
+                    st.write(f"**Genres:** {', '.join(artist['genres'])}")
+                    st.write(f"**Popularity:** {artist['popularity']}")
+                    st.write(f"**Followers:** {artist['followers']['total']}")
 
-        with st.expander("Top Artists"):
-            top_artists = get_top_artists(sp)
-            for i, (artist, count) in enumerate(top_artists):
-                st.write(f"{i + 1}. {artist}")
+                # Create a DataFrame for top artists' popularity
+                artist_data = {
+                    'Artist': [artist['name'] for artist in top_artists],
+                    'Popularity': [artist['popularity'] for artist in top_artists]
+                }
+                df_artists = pd.DataFrame(artist_data)
+                df_artists = df_artists.sort_values('Popularity', ascending=False)
 
-        # Get Top Data
-        results = {}
-        for term in ['short_term', 'medium_term']:
-            results[term] = {}
-            results[term]['top_tracks'] = sp.current_user_top_tracks(time_range=term, limit=10)['items']
-            results[term]['top_artists'] = sp.current_user_top_artists(time_range=term, limit=10)['items']
+                # Display explanation message
+                st.header('Popularity', divider='rainbow')
+                st.write("The artist's popularity is calculated from the popularity of all the artist's tracks.")
+                st.write("The popularity score is based on several factors, including:")
+                st.write("- The total number of plays the artist has had across all their tracks.")
+                st.write("- How recent those plays are.")
+                st.write("- The number of positive and negative ratings the artist's tracks have received from users.")
 
-        # Display Results
-        st.title("Personal Top Tracks & Artists")
-
-        # Create columns for the personal track list and analysis results with custom widths
-        col3, col4 = st.columns([2, 3])  # Adjust the width ratio as needed
-
-        with col3:
-            with st.expander("Top Tracks"):
-                for track in results['short_term']['top_tracks']:
-                    track_name = track['name']
-                    artist_name = track['artists'][0]['name']
-
-                    # Create columns for the track info and analyze button
-                    track_col, button_col = st.columns([4, 1])
-
-                    with track_col:
-                        st.write(f"{track_name} - {artist_name}")
-
-                    with button_col:
-                        if st.button(f"Analyze", key=f"personal_{track_name}"):
-                            analyze_track_lyrics(track_name, artist_name, col4)
-
-        with st.expander("Top Artists"):
-            for artist in results['short_term']['top_artists']:
-                st.write(artist['name'])
+        with col2:
+            # Create a bar chart for top artists' popularity
+            st.bar_chart(data=df_artists, x='Artist', y='Popularity', width=600, height=400)
 
 
-def analyze_track_lyrics(track_name, artist_name, col):
+def analyze_track_lyrics(track_name, artist_name, placeholder):
     lyrics = get_lyrics(track_name, artist_name)
     if lyrics:
         prompt = (
             "Analyze the following lyrics and provide insights about the song's theme, "
-            "emotions, and any figurative language used. Limit the analysis to two paragraphs"
+            "emotions, and any figurative language used. Limit the analysis to two paragraphs. State your analysis without ever referring to the prompter."
         )
         analysis = analyze_lyrics_with_openai(lyrics, prompt)
         if analysis:
-            with col:
+            with placeholder.container():
                 st.subheader("Analysis Results")
                 st.write(f"**Track:** {track_name}")
                 st.write(f"**Artist:** {artist_name}")
                 st.write(analysis)
     else:
-        st.write(f"Lyrics not found for {track_name} - {artist_name}")
+        with placeholder.container():
+            st.write(f"Lyrics not found for {track_name} - {artist_name}")
 
 
 if __name__ == "__main__":
