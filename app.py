@@ -47,12 +47,10 @@ def get_lyrics(song_title, artist_name):
         st.write(f"Error retrieving lyrics: {str(e)}")
     return None
 
-
 # Get top tracks in the US
 def get_top_tracks(sp):
     top_tracks = sp.playlist_tracks("spotify:playlist:37i9dQZEVXbLRQDuF5jeBp", limit=10)
     return top_tracks["items"]
-
 
 def get_top_artists(sp):
     # Since the Spotify API doesn't have a direct endpoint for global top artists,
@@ -73,7 +71,7 @@ def analyze_lyrics_with_openai(lyrics, prompt):
                 {"role": "system", "content": "You are a helpful assistant that analyzes song lyrics."},
                 {"role": "user", "content": f"{prompt}\n\nLyrics:\n{lyrics}"}
             ],
-            max_tokens=250,
+            max_tokens=550,
             n=1,
             stop=None,
             temperature=0.7,
@@ -86,7 +84,6 @@ def analyze_lyrics_with_openai(lyrics, prompt):
         st.write(f"Error analyzing lyrics with OpenAI: {str(e)}")
         return None
 
-
 def main():
     st.title("Spotify Analyzer")
 
@@ -98,9 +95,6 @@ def main():
             f'<a href="{auth_url}" target="_blank"><button style="background-color: #1DB954; color: white; border: none; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer;">Authenticate with Spotify</button></a>',
             unsafe_allow_html=True)
 
-        # Create a sidebar column with a width of 33%
-        sidebar_col = st.sidebar.columns(3)
-
         # Place the input box in the first column of the sidebar
         response_url = st.text_input("", value="", max_chars=None, key=None, type="default", help=None,
                                      autocomplete=None, on_change=None, args=None, kwargs=None,
@@ -110,8 +104,15 @@ def main():
             try:
                 code = auth_manager.parse_response_code(response_url)
                 token_info = auth_manager.get_access_token(code, check_cache=False)
-                auth_manager.cache_handler.save_token_to_cache(token_info)
-                st.experimental_rerun()
+
+                # Check if token_info is a dictionary and contains 'access_token'
+                if isinstance(token_info, dict) and 'access_token' in token_info:
+                    access_token = token_info['access_token']
+                else:
+                    access_token = token_info
+
+                auth_manager.cache_handler.save_token_to_cache({"access_token": access_token})
+                st.rerun()
 
             except Exception as e:
                 st.error("Authentication failed. Please check your Spotify credentials and try again.")
@@ -243,7 +244,6 @@ def main():
             # Create a bar chart for top artists' popularity
             st.bar_chart(data=df_artists, x='Artist', y='Popularity', width=600, height=400)
 
-
 def analyze_track_lyrics(track_name, artist_name, placeholder):
     lyrics = get_lyrics(track_name, artist_name)
     if lyrics:
@@ -261,7 +261,6 @@ def analyze_track_lyrics(track_name, artist_name, placeholder):
     else:
         with placeholder.container():
             st.write(f"Lyrics not found for {track_name} - {artist_name}")
-
 
 if __name__ == "__main__":
     main()
